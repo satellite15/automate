@@ -3,12 +3,16 @@ package config
 import (
 	"io/ioutil"
 	"os"
+	"time"
+
+	toml "github.com/pelletier/go-toml"
+	log "github.com/sirupsen/logrus"
+	rrule "github.com/teambition/rrule-go"
 
 	"github.com/chef/automate/api/interservice/ingest"
 	project_update_lib "github.com/chef/automate/lib/authz"
 	base_config "github.com/chef/automate/lib/config"
-	toml "github.com/pelletier/go-toml"
-	log "github.com/sirupsen/logrus"
+	"github.com/chef/automate/lib/workflow"
 )
 
 // TODO @afiune We are unable to use this custom type because the underlying go-toml
@@ -49,39 +53,41 @@ type JobConfig struct {
 	Running bool `toml:"running"`
 }
 
-// ApplyJobSettings will apply the provided settings to the job configuration
-// returns 'true' if the configuration was modified to indicate that an update is needed
-func (jc *JobConfig) ApplyJobSettings(settings *ingest.JobSettings) (bool, error) {
-	var (
-		retrigger = false
-		err       = settings.Validate()
-	)
-
+func JobSettingsToUpdateOpts(settings *ingest.JobSettings, oldRecurrence *rrule.RRule) ([]workflow.WorkflowScheduleUpdateOpts, error) {
+	err := settings.Validate()
 	if err != nil {
-		return retrigger, err
+		return nil, err
 	}
 
-	if e := settings.GetEvery(); len(e) > 0 && jc.Every != e {
-		jc.Every = e
-		retrigger = true
+	ret := make([]workflow.WorkflowScheduleUpdateOpts, 0)
+	if e := settings.GetEvery(); len(e) > 0 {
+		// Convert duration to an rrule
+		d, err := time.ParseDuration(e)
+		if err != nil {
+			// unlikley as validate already checked this
+			return nil, err
+		}
+
+		r, err := rrule.NewRRule(rrule.ROption{
+			Freq:     rrule.SECONDLY,
+			Interval: int(d.Seconds()),
+			Dtstart:  oldRecurrence.OrigOptions.Dtstart,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		ret = append(ret, workflow.UpdateRecurrence(r))
 	}
 
-	if t := settings.GetThreshold(); len(t) > 0 && jc.Threshold != t {
-		jc.Threshold = t
-		retrigger = true
+	if t := settings.GetThreshold(); len(t) > 0 {
+		ret = append(ret, workflow.UpdateParameters(t))
 	}
 
-	if settings.GetRunning() != jc.Running {
-		jc.Running = settings.GetRunning()
-		retrigger = true
-	}
+	ret = append(ret, workflow.UpdateEnabled(settings.GetRunning()))
 
-	return retrigger, nil
-}
+	return ret, nil
 
-// JobName is the name of the job
-func (jc *JobConfig) JobName() string {
-	return JobList[jc.ID]
 }
 
 // JobSchedulerConfig - the config for the job scheduler
@@ -159,19 +165,6 @@ func (manager *Manager) Close() {
 	manager.baseConfigManager.Close()
 }
 
-// GetJobSchedulerConfig get the job scheduler config
-func (manager *Manager) GetJobSchedulerConfig() JobSchedulerConfig {
-	return manager.getConfig().JobSchedulerConfig
-}
-
-// UpdateJobSchedulerConfig - update the job scheduler config
-func (manager *Manager) UpdateJobSchedulerConfig(jobSchedulerConfig JobSchedulerConfig) error {
-	return manager.updateConfig(func(config aggregateConfig) (aggregateConfig, error) {
-		config.JobSchedulerConfig = jobSchedulerConfig
-		return config, nil
-	})
-}
-
 // GetProjectUpdateConfig - get the project update config data
 func (manager *Manager) GetProjectUpdateConfig() project_update_lib.ProjectUpdateConfig {
 	return manager.getConfig().ProjectUpdateConfig
@@ -181,66 +174,6 @@ func (manager *Manager) GetProjectUpdateConfig() project_update_lib.ProjectUpdat
 func (manager *Manager) UpdateProjectUpdateConfig(projectUpdateConfig project_update_lib.ProjectUpdateConfig) error {
 	return manager.updateConfig(func(config aggregateConfig) (aggregateConfig, error) {
 		config.ProjectUpdateConfig = projectUpdateConfig
-		return config, nil
-	})
-}
-
-// GetJobsID returns a list of job ids loaded in the manager config
-func (manager *Manager) GetJobsID() []int {
-	ids := make([]int, len(manager.getConfig().JobsConfig))
-	for i, j := range manager.getConfig().JobsConfig {
-		ids[i] = j.ID
-	}
-
-	return ids
-}
-
-// GetJobConfig returns the configuration of the provided job.
-// if the job doesn't exist, it returns an empty config
-func (manager *Manager) GetJobConfig(jID int) JobConfig {
-	for _, j := range manager.getConfig().JobsConfig {
-		if j.ID == jID {
-			return j
-		}
-	}
-	return JobConfig{}
-}
-
-// GetDeleteNodesSchedulerConfig get the delete node config
-func (manager *Manager) GetDeleteNodesSchedulerConfig() JobConfig {
-	return manager.GetJobConfig(DeleteNodes)
-}
-
-// GetNodesMissingSchedulerConfig get the node missing config
-func (manager *Manager) GetNodesMissingSchedulerConfig() JobConfig {
-	return manager.GetJobConfig(NodesMissing)
-}
-
-// GetMissingNodesForDeletionSchedulerConfig get the node missing config
-func (manager *Manager) GetMissingNodesForDeletionSchedulerConfig() JobConfig {
-	return manager.GetJobConfig(MissingNodesForDeletion)
-}
-
-// UpdateDeleteNodesSchedulerConfig - update the delete node config
-func (manager *Manager) UpdateDeleteNodesSchedulerConfig(jConfig JobConfig) error {
-	return manager.updateConfig(func(config aggregateConfig) (aggregateConfig, error) {
-		config.JobsConfig[DeleteNodes] = jConfig
-		return config, nil
-	})
-}
-
-// UpdateNodesMissingSchedulerConfig update the missing nodes for deletion task
-func (manager *Manager) UpdateNodesMissingSchedulerConfig(jConfig JobConfig) error {
-	return manager.updateConfig(func(config aggregateConfig) (aggregateConfig, error) {
-		config.JobsConfig[NodesMissing] = jConfig
-		return config, nil
-	})
-}
-
-// UpdateMissingNodesForDeletionSchedulerConfig update the missing nodes for deletion config
-func (manager *Manager) UpdateMissingNodesForDeletionSchedulerConfig(jConfig JobConfig) error {
-	return manager.updateConfig(func(config aggregateConfig) (aggregateConfig, error) {
-		config.JobsConfig[MissingNodesForDeletion] = jConfig
 		return config, nil
 	})
 }

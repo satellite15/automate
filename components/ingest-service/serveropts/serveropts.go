@@ -15,6 +15,8 @@ type Opts struct {
 	RestPort                      int
 	ElasticSearchUrl              string
 	EsSidecarAddress              string
+	PGURL                         string
+	PGDatabase                    string
 	AuthzAddress                  string
 	EventAddress                  string
 	LogLevel                      string

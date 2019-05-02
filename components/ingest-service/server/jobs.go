@@ -1,124 +1,158 @@
 package server
 
 import (
-	"github.com/chef/automate/components/ingest-service/backend"
-	"github.com/chef/automate/components/ingest-service/config"
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
+
+	"github.com/chef/automate/components/ingest-service/backend"
+	"github.com/chef/automate/lib/workflow"
 )
 
-func (server *JobSchedulerServer) addUpdateJob(jc config.JobConfig) {
-	var cronFunc func()
+// TODO(ssd) 2019-05-15: This is a helper to avoid having to write
+// workflows for things that are just single tasks. Perhaps the
+// workflow library could have a helper that..helps with this.
+type SingleTaskWorkflow struct {
+	taskName string
+}
 
-	switch jc.ID {
-	case config.DeleteNodes:
-		cronFunc = func() {
-			deleteExpiredMarkedNodes(context.Background(), jc, server.client)
-		}
-	case config.NodesMissing:
-		cronFunc = func() {
-			markNodesMissing(context.Background(), jc, server.client)
-		}
-	case config.MissingNodesForDeletion:
-		cronFunc = func() {
-			markMissingNodesForDeletion(context.Background(), jc, server.client)
-		}
-	default:
-		log.Errorf("Job ID %d is not supported", jc.ID)
-		return
+func NewSingleTaskWorkflow(taskName string) *SingleTaskWorkflow {
+	return &SingleTaskWorkflow{taskName}
+}
+
+func (s *SingleTaskWorkflow) OnStart(w workflow.WorkflowInstanceHandler, ev workflow.StartEvent) workflow.Decision {
+	var params string
+	err := w.GetParameters(&params)
+	if err != nil {
+		logrus.WithError(err).Error("failed to get parameters")
+		w.Complete()
 	}
 
-	server.jobScheduler.AddUpdateJob(jc.JobName(), jc.Threshold, jc.Every, jc.Running, cronFunc)
+	w.EnqueueTask(s.taskName, params)
+	return w.Continue(0)
+}
+
+func (s *SingleTaskWorkflow) OnTaskComplete(w workflow.WorkflowInstanceHandler,
+	ev workflow.TaskCompleteEvent) workflow.Decision {
+	return w.Complete()
+}
+
+func (s *SingleTaskWorkflow) OnCancel(w workflow.WorkflowInstanceHandler,
+	ev workflow.CancelEvent) workflow.Decision {
+	return w.Complete()
+}
+
+type DeleteExpiredMarkedNodesTask struct {
+	Client backend.Client
+}
+
+func (t *DeleteExpiredMarkedNodesTask) Run(ctx context.Context, task workflow.TaskQuerier) (interface{}, error) {
+	var threshold string
+	err := task.GetParameters(&threshold)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not get threshold parameter")
+	}
+
+	return nil, deleteExpiredMarkedNodes(ctx, threshold, t.Client)
+}
+
+type MarkNodesMissingTask struct {
+	Client backend.Client
+}
+
+func (t *MarkNodesMissingTask) Run(ctx context.Context, task workflow.TaskQuerier) (interface{}, error) {
+	var threshold string
+	err := task.GetParameters(&threshold)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not get threshold parameter")
+	}
+
+	return nil, markNodesMissing(ctx, threshold, t.Client)
+}
+
+type MarkMissingNodesForDeletionTask struct {
+	Client backend.Client
+}
+
+func (t *MarkMissingNodesForDeletionTask) Run(ctx context.Context, task workflow.TaskQuerier) (interface{}, error) {
+	var threshold string
+	err := task.GetParameters(&threshold)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not get threshold parameter")
+	}
+
+	return nil, markMissingNodesForDeletion(ctx, threshold, t.Client)
 }
 
 // markNodesMissing is a job that will call the backend to mark
 // all nodes that haven't checked in passed the threshold
-func markNodesMissing(ctx context.Context, c config.JobConfig, client backend.Client) error {
-	log.WithFields(log.Fields{
-		"threshold": c.Threshold,
-		"job":       c.JobName(),
-	}).Debug("Triggering job")
+func markNodesMissing(ctx context.Context, threshold string, client backend.Client) error {
+	logctx := log.WithFields(log.Fields{
+		"threshold": threshold,
+		"job":       "MarkMissingNodesForDeletion",
+	})
 
-	updateCount, err := client.MarkNodesMissing(ctx, c.Threshold)
+	logctx.Debug("Starting job")
+	updateCount, err := client.MarkNodesMissing(ctx, threshold)
 	if err != nil {
-		log.WithFields(log.Fields{
-			"error":     err,
-			"threshold": c.Threshold,
-			"job":       c.JobName(),
-		}).Error("Job error")
+		logctx.WithError(err).Error("Job failed")
 		return err
 	}
 
-	f := log.Fields{
-		"nodes_updated": updateCount,
-		"status":        "missing",
-		"job":           c.JobName(),
-	}
+	f := log.Fields{"nodes_updated": updateCount}
 	if updateCount > 0 {
-		log.WithFields(f).Info("Job updated nodes")
+		logctx.WithFields(f).Info("Job updated nodes")
 	} else {
-		log.WithFields(f).Debug("Job ran without updates")
+		logctx.WithFields(f).Debug("Job ran without updates")
 	}
 	return nil
 }
 
 // markMissingNodesForDeletion is a job that will call the backend to mark all missing nodes
 // that haven't checked in passed the threshold ready for deletion
-func markMissingNodesForDeletion(ctx context.Context, c config.JobConfig, client backend.Client) error {
-	log.WithFields(log.Fields{
-		"threshold": c.Threshold,
-		"job":       c.JobName(),
-	}).Debug("Triggering job")
+func markMissingNodesForDeletion(ctx context.Context, threshold string, client backend.Client) error {
+	logctx := log.WithFields(log.Fields{
+		"threshold": threshold,
+		"job":       "MarkMissingNodesForDeletion",
+	})
 
-	updateCount, err := client.MarkMissingNodesForDeletion(ctx, c.Threshold)
+	logctx.Debug("Starting job")
+	updateCount, err := client.MarkMissingNodesForDeletion(ctx, threshold)
 	if err != nil {
-		log.WithFields(log.Fields{
-			"error":     err,
-			"threshold": c.Threshold,
-			"job":       c.JobName(),
-		}).Error("Job error")
+		log.WithError(err).Error("Job failed")
 		return err
 	}
 
-	f := log.Fields{
-		"nodes_updated": updateCount,
-		"exists":        false,
-		"job":           c.JobName(),
-	}
+	f := log.Fields{"nodes_updated": updateCount}
 	if updateCount > 0 {
-		log.WithFields(f).Info("Job updated nodes")
+		logctx.WithFields(f).Info("Job updated nodes")
 	} else {
-		log.WithFields(f).Debug("Job ran without updates")
+		logctx.WithFields(f).Debug("Job ran without updates")
 	}
 	return nil
 }
 
 // deleteExpiredMarkedNodes is a job that will call the backend to delete all expired
 // nodes marked for deletion
-func deleteExpiredMarkedNodes(ctx context.Context, c config.JobConfig, client backend.Client) error {
-	log.WithFields(log.Fields{
-		"threshold": c.Threshold,
-		"job":       c.JobName(),
-	}).Debug("Triggering delete job")
+func deleteExpiredMarkedNodes(ctx context.Context, threshold string, client backend.Client) error {
+	logctx := log.WithFields(log.Fields{
+		"job":       "DeleteExpiredMarkedNodes",
+		"threshold": threshold,
+	})
 
-	updateCount, err := client.DeleteMarkedNodes(ctx, c.Threshold)
+	logctx.Debug("Starting Job")
+	updateCount, err := client.DeleteMarkedNodes(ctx, threshold)
 	if err != nil {
-		log.WithFields(log.Fields{
-			"error":     err,
-			"threshold": c.Threshold,
-			"job":       c.JobName(),
-		}).Error("Job error")
+		logctx.WithError(err).Error("Job Failed")
 		return err
 	}
 
-	f := log.Fields{
-		"nodes_deleted": updateCount,
-		"job":           c.JobName(),
-	}
+	f := log.Fields{"nodes_deleted": updateCount}
 	if updateCount > 0 {
-		log.WithFields(f).Info("Job deleted nodes")
+		logctx.WithFields(f).Info("Job deleted nodes")
 	} else {
-		log.WithFields(f).Debug("Job ran without updates")
+		logctx.WithFields(f).Debug("Job ran without updates")
 	}
 	return nil
 }

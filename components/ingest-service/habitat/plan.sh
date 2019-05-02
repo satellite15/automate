@@ -9,10 +9,15 @@ pkg_binds=(
   [automate-es-gateway]="http-port http-host"
   [authz-service]="port"
   [event-service]="port"
+  # TODO(ssd) 2019-05-02: We could consider making these optional
+  [automate-pg-gateway]="port"
+  [pg-sidecar-service]="port"
+
 )
 pkg_binds_optional=(
-  [es-sidecar-service]="port"
+    [es-sidecar-service]="port"
 )
+
 pkg_exports=(
   [port]=service.port
 )
@@ -21,6 +26,7 @@ pkg_deps=(
   core/glibc
   core/grpcurl
   core/jq-static
+  chef/automate-platform-tools
   chef/mlsa
 )
 pkg_build_deps=(

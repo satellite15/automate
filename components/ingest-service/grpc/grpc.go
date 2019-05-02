@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
+	rrule "github.com/teambition/rrule-go"
 	"google.golang.org/grpc/reflection"
 
 	iam_v2 "github.com/chef/automate/api/interservice/authz/v2"
@@ -19,6 +22,8 @@ import (
 	"github.com/chef/automate/components/ingest-service/migration"
 	"github.com/chef/automate/components/ingest-service/server"
 	"github.com/chef/automate/components/ingest-service/serveropts"
+	"github.com/chef/automate/lib/platform"
+	"github.com/chef/automate/lib/workflow"
 )
 
 // Spawn starts a gRPC Server listening on the provided host and port,
@@ -105,21 +110,64 @@ func Spawn(opts *serveropts.Opts) error {
 	// Pass the chef ingest server to give status about the pipelines
 	ingestStatus.SetChefIngestServer(chefIngest)
 
-	// JobScheduler
-	// Create a job scheduler so we can triggers jobs like mark
-	// nodes as missing on a specific threshold every minute
-	jobScheduler := server.NewJobScheduler()
-	defer jobScheduler.Close()
+	pgURL, err := pgURL(opts.PGURL, opts.PGDatabase)
+	if err != nil {
+		log.WithError(err).Fatal("could not get PG URL")
+	}
 
+	wbackend, err := workflow.NewPostgresBackend(pgURL)
+	if err != nil {
+		log.WithError(err).Fatal("could not create postgresql backend for workflow")
+	}
+
+	// TODO(ssd) 2019-05-15: Something else should call this,
+	// either NewPostgresqlBackend or NewManager
+	err = wbackend.Init()
+	if err != nil {
+		logrus.WithError(err).Fatal("could not initialize postgresql database for workflow")
+	}
+
+	// Setup workflows and tasks for periodic tasks
+	workflowManager := workflow.NewManager(wbackend)
+	workflowManager.RegisterTaskExecutor("delete_expired", &server.DeleteExpiredMarkedNodesTask{client}, workflow.TaskExecutorOpts{})
+	workflowManager.RegisterTaskExecutor("missing_nodes", &server.MarkNodesMissingTask{client}, workflow.TaskExecutorOpts{})
+	workflowManager.RegisterTaskExecutor("missing_nodes_for_deletion", &server.MarkMissingNodesForDeletionTask{client}, workflow.TaskExecutorOpts{})
+	workflowManager.RegisterWorkflowExecutor("delete_expired", server.NewSingleTaskWorkflow("delete_expired"))
+	workflowManager.RegisterWorkflowExecutor("missing_nodes", server.NewSingleTaskWorkflow("missing_nodes"))
+	workflowManager.RegisterWorkflowExecutor("missing_nodes_for_deletion", server.NewSingleTaskWorkflow("missing_nodes_for_deletion"))
+	// Initialize default schedule
+	defaultRrule, err := rrule.NewRRule(rrule.ROption{
+		Freq:     rrule.MINUTELY,
+		Interval: 15,
+	})
+	if err != nil {
+		logrus.WithError(err).Fatal("could not initialize default recurrence rule")
+	}
+
+	err = workflowManager.CreateWorkflowSchedule("periodic_missing_nodes", "missing_nodes", "1d", true, defaultRrule)
+	if err != nil && err != workflow.ErrWorkflowScheduleExists {
+		logrus.WithError(err).Fatal("could not initialize workflow schedule")
+	}
+	err = workflowManager.CreateWorkflowSchedule("periodic_missing_nodes_for_deletion", "missing_nodes_for_deletion", "30d", true, defaultRrule)
+	if err != nil && err != workflow.ErrWorkflowScheduleExists {
+		logrus.WithError(err).Fatal("could not initialize workflow schedule")
+	}
+	err = workflowManager.CreateWorkflowSchedule("periodic_delete_expired", "delete_expired", "1d", false, defaultRrule)
+	if err != nil && err != workflow.ErrWorkflowScheduleExists {
+		logrus.WithError(err).Fatal("could not initialize workflow schedule")
+	}
+
+	// JobSchedulerServer
+	jobSchedulerServer := server.NewJobSchedulerServer(client, workflowManager)
+	ingest.RegisterJobSchedulerServer(grpcServer, jobSchedulerServer)
+
+	// TODO(ssd) 2019-05-15: The projectUpdater process still uses
+	// the config manager.
 	configManager, err := config.NewManager(viper.ConfigFileUsed())
 	if err != nil {
 		return err
 	}
 	defer configManager.Close()
-
-	// JobSchedulerServer
-	jobSchedulerServer := server.NewJobSchedulerServer(client, jobScheduler, configManager)
-	ingest.RegisterJobSchedulerServer(grpcServer, jobSchedulerServer)
 
 	// EventHandler
 	eventHandlerServer := server.NewAutomateEventHandlerServer(client, *chefIngest,
@@ -156,4 +204,15 @@ func Spawn(opts *serveropts.Opts) error {
 	reflection.Register(grpcServer)
 
 	return grpcServer.Serve(conn)
+}
+
+func pgURL(pgURL string, pgDBName string) (string, error) {
+	if pgURL == "" {
+		var err error
+		pgURL, err = platform.PGURIFromEnvironment(pgDBName)
+		if err != nil {
+			return "", errors.Wrap(err, "Failed to get pg uri")
+		}
+	}
+	return pgURL, nil
 }

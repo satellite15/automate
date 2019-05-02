@@ -5,6 +5,8 @@ exec 2>&1
 # Call the script to block until user accepts the MLSA via the package's config
 {{pkgPathFor "chef/mlsa"}}/bin/accept {{cfg.mlsa.accept}}
 
+DBNAME=chef_ingest_service
+
 # Setting coming from our default.toml
 CONFIG="--port {{cfg.service.port}}"
 {{~#if cfg.service.purge_converge_history_after_days }}
@@ -35,6 +37,8 @@ CONFIG="$CONFIG --root-cert {{pkg.svc_config_path}}/root_ca.crt"
 
 # Create the ingest config file
 CONFIG="$CONFIG --config {{pkg.svc_data_path}}/.ingest-service.toml"
+
+CONFIG="$CONFIG --postgresql-database $DBNAME"
 
 # Listen to what our gossip protocol whispers
 #
@@ -76,6 +80,8 @@ addNoProxy {{event-service.sys.ip}}
 CONFIG="$CONFIG --event-address {{event-service.sys.ip}}:{{event-service.cfg.port}}"
   {{~/if}}
 {{~/eachAlive}}
+
+pg-helper ensure-service-database "$DBNAME"
 
 # Start Ingest Service
 exec ingest-service serve $CONFIG $BACKEND
