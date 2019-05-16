@@ -554,6 +554,7 @@ func (pg *PostgresBackend) EnqueueWorkflow(ctx context.Context, w *WorkflowInsta
 	row := tx.QueryRowContext(ctx, enqueueWorkflowQuery, w.InstanceName, w.WorkflowName, w.Parameters)
 
 	var count sql.NullInt64
+
 	err = row.Scan(&count)
 	if err != nil {
 		return wrapErr(err, "failed to enqueue workflow")
@@ -561,8 +562,7 @@ func (pg *PostgresBackend) EnqueueWorkflow(ctx context.Context, w *WorkflowInsta
 	if err := tx.Commit(); err != nil {
 		return wrapErr(err, "failed to commit enqueue workflow")
 	}
-
-	if !count.Valid || count.Int64 == 0 {
+	if count.Int64 == 0 {
 		return ErrWorkflowInstanceExists
 	}
 	return nil
@@ -811,13 +811,13 @@ func (c *PostgresRecurringWorkflowCompleter) EnqueueRecurringWorkflow(
 
 	row := c.tx.QueryRowContext(c.ctx, enqueueWorkflowQuery, workflowInstanceName, s.WorkflowName, s.Parameters)
 
-	var count int
+	var count sql.NullInt64
 	err := row.Scan(&count)
 	if err != nil {
 		return wrapErr(err, "failed to enqueue workflow")
 	}
 
-	if count == 0 {
+	if count.Int64 == 0 {
 		_, err = c.tx.ExecContext(c.ctx, updateSlowRecurringWorkflowQuery, s.ID, nextDueAt)
 		if err != nil {
 			return wrapErr(err, "failed to update workflow schedule")
