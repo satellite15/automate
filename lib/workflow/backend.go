@@ -29,8 +29,13 @@ const (
 	abandonWorkflowQuery  = `SELECT abandon_workflow($1, $2, $3)`
 
 	listRecurringWorkflowsQuery = `
-	SELECT id, enabled, name, workflow_name, parameters, recurrence, next_run_at
-	FROM recurring_workflow_schedules
+	WITH res AS 
+		(SELECT DISTINCT ON (name, workflow_name) * from workflow_results 
+		ORDER BY name, workflow_name, end_at DESC) 
+	SELECT s.id, enabled, s.name, s.workflow_name, s.parameters, recurrence, 
+		next_run_at, start_at last_start, end_at last_end 
+		FROM recurring_workflow_schedules s LEFT JOIN res 
+		ON s.name = res.name AND s.workflow_name = res.workflow_name;
 	`
 	getDueRecurringWorkflowQuery = `
         SELECT id, enabled, name, workflow_name, parameters, recurrence
@@ -337,6 +342,8 @@ func (pg *PostgresBackend) ListWorkflowSchedules(ctx context.Context) ([]*Schedu
 			&scheduledWorkflow.Parameters,
 			&scheduledWorkflow.Recurrence,
 			&scheduledWorkflow.NextDueAt,
+			&scheduledWorkflow.LastStart,
+			&scheduledWorkflow.LastEnd,
 		)
 		if err != nil {
 			logrus.WithError(err).Error("could not scan workflow schedule from database, skipping")
@@ -546,7 +553,7 @@ func (pg *PostgresBackend) EnqueueWorkflow(ctx context.Context, w *WorkflowInsta
 
 	row := tx.QueryRowContext(ctx, enqueueWorkflowQuery, w.InstanceName, w.WorkflowName, w.Parameters)
 
-	var count int
+	var count sql.NullInt64
 	err = row.Scan(&count)
 	if err != nil {
 		return wrapErr(err, "failed to enqueue workflow")
@@ -554,7 +561,8 @@ func (pg *PostgresBackend) EnqueueWorkflow(ctx context.Context, w *WorkflowInsta
 	if err := tx.Commit(); err != nil {
 		return wrapErr(err, "failed to commit enqueue workflow")
 	}
-	if count == 0 {
+
+	if !count.Valid || count.Int64 == 0 {
 		return ErrWorkflowInstanceExists
 	}
 	return nil

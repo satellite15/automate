@@ -303,11 +303,14 @@ func runPerfTest(_ *cobra.Command, args []string) error {
 	workflowManager.Start(context.Background())
 	if !perfTestOpts.SkipEnqueue {
 		instanceName := fmt.Sprintf("perf-test-%s", time.Now())
-		workflowManager.EnqueueWorkflow(context.TODO(),
+		err := workflowManager.EnqueueWorkflow(context.TODO(),
 			"perf-test", instanceName,
 			&params,
 		)
-		err := workflowManager.EnqueueWorkflow(context.TODO(),
+		if err != nil {
+			panic(err)
+		}
+		err = workflowManager.EnqueueWorkflow(context.TODO(),
 			"perf-test", instanceName,
 			&params,
 		)
@@ -315,6 +318,7 @@ func runPerfTest(_ *cobra.Command, args []string) error {
 			logrus.Info("Successfully can't add multiple workflows with the same name")
 		} else {
 			logrus.WithError(err).Error("Unspected error")
+			panic(err)
 		}
 	}
 
@@ -425,14 +429,30 @@ func runScheduleTest(_ *cobra.Command, args []string) error {
 		}
 	}
 
+	go func() {
+		for {
+			schedules, err := w.ListWorkflowSchedules(context.Background())
+			if err != nil {
+				logrus.WithError(err).Error("Failed to list workflow schedules")
+			}
+			for _, s := range schedules {
+				logrus.WithFields(
+					logrus.Fields{
+						"name":          s.Name,
+						"workflow_name": s.WorkflowName,
+						"next_due":      s.NextDueAt,
+						"last_start":    s.LastStart,
+						"last_end":      s.LastEnd,
+					}).Info("Found schedule")
+			}
+			time.Sleep(1 * time.Minute)
+		}
+	}()
+
 	schedules, err := w.ListWorkflowSchedules(context.Background())
 	if err != nil {
 		logrus.WithError(err).Error("Failed to list workflow schedules")
 	}
-	for _, s := range schedules {
-		logrus.WithField("sched", s).Info("Found schedule")
-	}
-
 	w.UpdateWorkflowScheduleByID(context.Background(),
 		schedules[0].ID, workflow.UpdateParameters("youwin"))
 
