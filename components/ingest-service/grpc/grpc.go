@@ -157,6 +157,8 @@ func Spawn(opts *serveropts.Opts) error {
 		logrus.WithError(err).Fatal("could not initialize workflow schedule")
 	}
 
+	workflowManager.Start(context.Background())
+
 	// JobSchedulerServer
 	jobSchedulerServer := server.NewJobSchedulerServer(client, workflowManager)
 	ingest.RegisterJobSchedulerServer(grpcServer, jobSchedulerServer)
