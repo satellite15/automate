@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/chef/automate/components/automate-deployment/pkg/manifest"
 	"github.com/chef/automate/components/automate-deployment/pkg/manifest/client"
 )
 
@@ -55,7 +56,7 @@ func TestDirectoryGetCurrentManifestWhenDoesntExist(t *testing.T) {
 	client := client.NewPathClient(dir)
 	_, err = client.GetCurrentManifest(context.Background(), "current")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to read manifest at path")
+	assert.Equal(t, manifest.ErrNoSuchManifest, err)
 }
 
 func TestDirectoryGetCurrentManifestWhenInvalid(t *testing.T) {
@@ -69,7 +70,7 @@ func TestDirectoryGetCurrentManifestWhenInvalid(t *testing.T) {
 	client := client.NewPathClient(dir)
 	_, err = client.GetCurrentManifest(context.Background(), "current")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to parse manifest loaded from")
+	assert.Equal(t, manifest.ErrInvalidSchema, err)
 }
 
 func TestFileGetCurrentManifestA2(t *testing.T) {
@@ -141,7 +142,7 @@ func TestFileGetCurrentManifestWhenDoesntExist(t *testing.T) {
 	client := client.NewPathClient(filename)
 	_, err = client.GetCurrentManifest(context.Background(), "current")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to read manifest")
+	assert.Equal(t, manifest.ErrNoSuchManifest, err)
 }
 
 func TestFileGetCurrentManifestWhenInvalid(t *testing.T) {
@@ -155,7 +156,7 @@ func TestFileGetCurrentManifestWhenInvalid(t *testing.T) {
 	err = ioutil.WriteFile(filename, []byte("::::::"), 0700)
 	_, err = client.GetCurrentManifest(context.Background(), "current")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to parse manifest loaded from")
+	assert.Equal(t, manifest.ErrInvalidSchema, err)
 }
 
 func TestFileGetManifest(t *testing.T) {

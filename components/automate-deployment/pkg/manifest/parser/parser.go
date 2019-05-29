@@ -3,8 +3,6 @@ package parser
 import (
 	"encoding/json"
 
-	"github.com/pkg/errors"
-
 	"github.com/chef/automate/components/automate-deployment/pkg/habpkg"
 	"github.com/chef/automate/components/automate-deployment/pkg/manifest"
 )
@@ -40,14 +38,14 @@ func ManifestFromBytes(body []byte) (*manifest.A2, error) {
 	versionedManifest := &versionedManifest{}
 	err := json.Unmarshal(body, versionedManifest)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to parse manifest schema_version")
+		return nil, manifest.ErrInvalidSchema
 	}
 
 	switch {
 	case versionedManifest.SchemaVersion == "1":
 		return parseV1Manifest(body)
 	default:
-		return nil, errors.Errorf("Unknown manifest schema version %s", versionedManifest.SchemaVersion)
+		return nil, manifest.ErrInvalidSchema
 	}
 }
 
@@ -55,7 +53,7 @@ func parseV1Manifest(body []byte) (*manifest.A2, error) {
 	v1 := &v1Manifest{}
 	err := json.Unmarshal(body, v1)
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed to parse v1 manifest")
+		return nil, manifest.ErrCannotParse
 	}
 
 	m := &manifest.A2{}
@@ -70,7 +68,7 @@ func parseA2Manifest(body []byte) (*manifest.A2, error) {
 	a2 := &manifest.A2{}
 	err := json.Unmarshal(body, a2)
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed to A2 manifest")
+		return nil, manifest.ErrCannotParse
 	}
 
 	return a2, nil

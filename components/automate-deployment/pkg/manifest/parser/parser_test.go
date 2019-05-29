@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/chef/automate/components/automate-deployment/pkg/manifest"
 	"github.com/chef/automate/components/automate-deployment/pkg/manifest/parser"
 )
 
@@ -102,17 +103,17 @@ var goodA2Manifest = `
 func TestManifestFromBytes(t *testing.T) {
 	t.Run("unknown schema", func(t *testing.T) {
 		_, err := parser.ManifestFromBytes([]byte(unknownManifest))
-		assert.Error(t, err)
+		assert.Equal(t, manifest.ErrInvalidSchema, err)
 	})
 
 	t.Run("no schema", func(t *testing.T) {
 		_, err := parser.ManifestFromBytes([]byte(noSchemaManifest))
-		assert.Error(t, err)
+		assert.Equal(t, manifest.ErrInvalidSchema, err)
 	})
 
 	t.Run("malformed JSON", func(t *testing.T) {
 		_, err := parser.ManifestFromBytes([]byte(malformedJSON))
-		assert.Error(t, err)
+		assert.Equal(t, manifest.ErrInvalidSchema, err)
 	})
 
 	t.Run("v1", func(t *testing.T) {

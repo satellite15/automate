@@ -101,7 +101,7 @@ func (c *HTTP) manifestFromURL(ctx context.Context, url string) (*manifest.A2, e
 		// Yay!
 	case http.StatusNotFound:
 		logrus.Errorf("No such manifest %s: %s", url, response.Status)
-		return nil, manifest.NoSuchManifest
+		return nil, manifest.ErrNoSuchManifest
 	default:
 		return nil, errors.Errorf("Unexpected HTTP response from %s: %s", url, response.Status)
 	}
