@@ -609,6 +609,7 @@ func (r *Resolver) resolveStaticJob(ctx context.Context, job *jobs.Job) ([]*type
 			continue
 		}
 		agentJob := r.resolveStaticJobInfo(job, node, resolvedTC, id)
+		agentJob.ParentJobID = job.Id
 		jobArray = append(jobArray, &agentJob)
 	}
 	return jobArray, nil
