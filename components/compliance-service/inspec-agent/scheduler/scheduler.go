@@ -32,7 +32,7 @@ func (a *Scheduler) Run(job *jobs.Job) error {
 		// Ensure recurrence rule can be parsed
 		_, err := rrule.StrToRRule(job.Recurrence)
 		if err != nil {
-			return errors.Wrapf(err, "failed to schedule job %s: invalid job recurrent rule")
+			return errors.Wrapf(err, "failed to schedule job %q (%q): invalid job recurrence rule", job.Id, job.Name)
 		}
 		a.scanner.UpdateParentJobSchedule(job.Id, job.JobCount, job.Recurrence, job.ScheduledTime)
 		return nil
