@@ -36,6 +36,8 @@ type state struct {
 	store                storage.Storage
 	engine               engine.ProjectRulesRetriever
 	projectUpdateManager *ProjectUpdateManager
+	policyRefresher      PolicyRefresher
+	applyRuleMux         sync.Mutex
 }
 
 // NewMemstoreProjectsServer returns an instance of api.ProjectsServer
@@ -45,9 +47,10 @@ func NewMemstoreProjectsServer(
 	e engine.ProjectRulesRetriever,
 	eventServiceClient automate_event.EventServiceClient,
 	configManager *config.Manager,
+	pr PolicyRefresher,
 ) (api.ProjectsServer, error) {
 
-	return NewProjectsServer(ctx, l, memstore.New(), e, eventServiceClient, configManager)
+	return NewProjectsServer(ctx, l, memstore.New(), e, eventServiceClient, configManager, pr)
 }
 
 // NewPostgresProjectsServer instantiates a ProjectsServer using a PG store
@@ -59,13 +62,14 @@ func NewPostgresProjectsServer(
 	e engine.ProjectRulesRetriever,
 	eventServiceClient automate_event.EventServiceClient,
 	configManager *config.Manager,
+	pr PolicyRefresher,
 ) (api.ProjectsServer, error) {
 
 	s, err := postgres.New(ctx, l, migrationsConfig, dataMigrationsConfig)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to initialize v2 store state")
 	}
-	return NewProjectsServer(ctx, l, s, e, eventServiceClient, configManager)
+	return NewProjectsServer(ctx, l, s, e, eventServiceClient, configManager, pr)
 }
 
 func NewProjectsServer(
@@ -75,6 +79,7 @@ func NewProjectsServer(
 	e engine.ProjectRulesRetriever,
 	eventServiceClient automate_event.EventServiceClient,
 	configManager *config.Manager,
+	pr PolicyRefresher,
 ) (api.ProjectsServer, error) {
 
 	return &state{
@@ -82,6 +87,7 @@ func NewProjectsServer(
 		store:                s,
 		engine:               e,
 		projectUpdateManager: NewProjectUpdateManager(eventServiceClient, configManager),
+		policyRefresher:      pr,
 	}, nil
 }
 
@@ -158,13 +164,50 @@ func (s *state) UpdateProject(ctx context.Context,
 }
 
 func (s *state) ApplyRulesStart(
-	context.Context, *api.ApplyRulesStartReq) (*api.ApplyRulesStartResp, error) {
-	s.log.Info("apply project rules: START")
-	err := s.projectUpdateManager.Start()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"error starting project update: %s", err.Error())
+	ctx context.Context, _ *api.ApplyRulesStartReq) (*api.ApplyRulesStartResp, error) {
+	// NOTE (tc): Only one call to ApplyRulesStart can happen at a time.
+	// This should be good enough to prevent race conditions for single node,
+	// in conjunction with the table locking that happens in store.ApplyStagedRules.
+	// Can still get into a weird state if we panic, but a re-apply will fix things up.
+	// We will be refactoring for multi-node using workflow tooling in the near future.
+	s.applyRuleMux.Lock()
+	defer s.applyRuleMux.Unlock()
+
+	switch s.projectUpdateManager.State() {
+	case config.NotRunningState:
+		break
+	case config.RunningState:
+		return nil, status.Error(codes.FailedPrecondition,
+			"cannot apply rules: apply already in progress")
+	default:
+		return nil, status.Error(codes.Internal,
+			"failed to parse apply state")
 	}
+
+	err := s.store.ApplyStagedRules(ctx)
+	if err != nil {
+		s.log.Warnf("error applying staged projects: %s", err.Error())
+		return nil, status.Errorf(codes.Internal,
+			"error applying staged projects: %s", err.Error())
+	}
+
+	// TODO (tc): If we panic between here and manager Start, we will be in a state where the rules
+	// have been updated in the database but Refresh has not been kicked off.
+	// We will be refactoring with workflow to make this safer soon.
+	err = s.policyRefresher.Refresh(ctx)
+	if err != nil {
+		s.log.Warnf("error refreshing policy cache: %s", err.Error())
+		return nil, status.Errorf(codes.Internal,
+			"error refreshing policy cache. the rules were updated but the apply was not started, please try again.")
+	}
+
+	err = s.projectUpdateManager.Start()
+	if err != nil {
+		s.log.Warnf("error starting project update: %s", err.Error())
+		return nil, status.Errorf(codes.Internal,
+			"error starting project update. the rules and cache were updated but the apply was not started, please try again.")
+	}
+
 	return &api.ApplyRulesStartResp{}, nil
 }
 
