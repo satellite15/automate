@@ -1,6 +1,6 @@
-import { map, takeUntil, finalize } from 'rxjs/operators';
+import { map, takeUntil, finalize, withLatestFrom } from 'rxjs/operators';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, AfterContentInit } from '@angular/core';
 import { ActivatedRoute, Router, ParamMap } from '@angular/router';
 import { Subject, Observable, combineLatest } from 'rxjs';
 import { Chicklet, NodeCount, RollupState, SortDirection } from '../../types/types';
@@ -36,7 +36,7 @@ import { EntityStatus } from '../../entities/entities';
   templateUrl: './client-runs.component.html',
   styleUrls: ['./client-runs.component.scss']
 })
-export class ClientRunsComponent implements OnInit, OnDestroy {
+export class ClientRunsComponent implements OnInit, OnDestroy, AfterContentInit{
 
   // Should the URL share dropdown be displayed
   shareDropdownVisible = false;
@@ -322,6 +322,20 @@ export class ClientRunsComponent implements OnInit, OnDestroy {
         verb: 'post'
       }
     ], []);
+  }
+
+  ngAfterContentInit() {
+  // We want to report total nodes to telemetry, but only when there are no
+    // filters. This way we can see how many nodes a customer has connected to
+    // automate in total.
+    combineLatest(this.nodeCounts$, this.numberOfSearchBarFilters$)
+    .subscribe(([nodeCounts, filterCount]) => {
+        if(filterCount === 0 && nodeCounts.total > 0){
+
+          this.telemetryService.track('clientRunPureCount', nodeCounts);
+        }
+      }
+    );
   }
 
   hideNotification() {
