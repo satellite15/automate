@@ -8,13 +8,13 @@ import (
 	"path"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
 	api "github.com/chef/automate/api/interservice/authz/v2"
 	automate_event "github.com/chef/automate/api/interservice/event"
-	"github.com/chef/automate/components/authz-service/config"
 	"github.com/chef/automate/components/authz-service/prng"
 	grpc_server "github.com/chef/automate/components/authz-service/server"
 	server "github.com/chef/automate/components/authz-service/server/v2"
@@ -49,14 +49,12 @@ func SetupProjectsAndRulesWithDB(t *testing.T) (api.ProjectsClient, *TestDB, sto
 	seed := prng.GenSeed(t)
 
 	pg, testDB, _ := SetupTestDB(t)
-	eventServiceClient := &MockEventServiceClient{}
-	configMgr, err := config.NewManager("/tmp/.authz-delete-me")
-	require.NoError(t, err)
 
 	l, err := logger.NewLogger("text", "error")
 	require.NoError(t, err, "init logger for storage")
-	projectsSrv, err := server.NewProjectsServer(ctx, l, pg, &TestProjectRulesRetriever{},
-		eventServiceClient, configMgr, NewMockPolicyRefresher())
+	projectUpdateManager := NewMockProjectUpdateManager()
+	projectsSrv, err := server.NewProjectsServer(
+		ctx, l, pg, &TestProjectRulesRetriever{}, projectUpdateManager, NewMockPolicyRefresher())
 	require.NoError(t, err)
 
 	serviceCerts := helpers.LoadDevCerts(t, "authz-service")
@@ -76,6 +74,7 @@ func SetupProjectsAndRulesWithDB(t *testing.T) (api.ProjectsClient, *TestDB, sto
 		t.Fatalf("connecting to grpc endpoint: %s", err)
 	}
 
+	eventServiceClient := &MockEventServiceClient{}
 	return api.NewProjectsClient(conn), testDB, pg, eventServiceClient, seed
 }
 
@@ -224,4 +223,46 @@ func (*mockPolicyRefresher) Refresh(context.Context) error {
 
 func (refresher *mockPolicyRefresher) RefreshAsync() error {
 	return nil
+}
+
+type mockProjectUpdateManager struct{}
+
+func NewMockProjectUpdateManager() *mockProjectUpdateManager {
+	return &mockProjectUpdateManager{}
+}
+
+func (*mockProjectUpdateManager) Cancel() error {
+	return nil
+}
+
+func (*mockProjectUpdateManager) Start() error {
+	return nil
+}
+
+func (*mockProjectUpdateManager) ProcessFailEvent(eventMessage *automate_event.EventMsg) error {
+	return nil
+}
+
+func (*mockProjectUpdateManager) ProcessStatusEvent(eventMessage *automate_event.EventMsg) error {
+	return nil
+}
+
+func (*mockProjectUpdateManager) Failed() bool {
+	return false // manager.stage.Failed
+}
+
+func (*mockProjectUpdateManager) FailureMessage() string {
+	return "" // manager.stage.FailureMessage
+}
+
+func (*mockProjectUpdateManager) PercentageComplete() float64 {
+	return 0
+}
+
+func (*mockProjectUpdateManager) EstimatedTimeComplete() time.Time {
+	return time.Time{}
+}
+
+func (*mockProjectUpdateManager) State() string {
+	return "not_running" // manager.stage.State
 }
