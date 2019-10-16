@@ -74,7 +74,7 @@ func Start(dataFeedConfig *config.DataFeedConfig, connFactory *secureconn.Factor
 		return err
 	}
 
-	dataFeedPollTask, err := NewDataFeedPollTask(dataFeedConfig, connFactory, db)
+	dataFeedPollTask, err := NewDataFeedPollTask(dataFeedConfig, connFactory, db, manager)
 	if err != nil {
 		return err
 	}
@@ -99,10 +99,13 @@ func Start(dataFeedConfig *config.DataFeedConfig, connFactory *secureconn.Factor
 		return err
 	}
 
+	var zeroTime time.Time
 	dataFeedTaskParams := DataFeedPollTaskParams{
 		FeedInterval:    dataFeedConfig.ServiceConfig.FeedInterval,
 		AssetPageSize:   dataFeedConfig.ServiceConfig.AssetPageSize,
 		ReportsPageSize: dataFeedConfig.ServiceConfig.ReportsPageSize,
+		NextFeedStart:   zeroTime,
+		NextFeedEnd:     zeroTime,
 	}
 
 	err = manager.CreateWorkflowSchedule(context.Background(),
@@ -129,15 +132,18 @@ type DataFeedPollTask struct {
 	secrets   secrets.SecretsServiceClient
 	reporting reporting.ReportingServiceClient
 	db        *dao.DB
+	manager   *cereal.Manager
 }
 
 type DataFeedPollTaskParams struct {
 	AssetPageSize   int32
 	ReportsPageSize int32
 	FeedInterval    time.Duration
+	NextFeedStart   time.Time
+	NextFeedEnd     time.Time
 }
 
-func NewDataFeedPollTask(dataFeedConfig *config.DataFeedConfig, connFactory *secureconn.Factory, db *dao.DB) (*DataFeedPollTask, error) {
+func NewDataFeedPollTask(dataFeedConfig *config.DataFeedConfig, connFactory *secureconn.Factory, db *dao.DB, manager *cereal.Manager) (*DataFeedPollTask, error) {
 
 	cfgMgmtConn, err := connFactory.Dial("config-mgmt-service", dataFeedConfig.CfgmgmtConfig.Target)
 	if err != nil {
@@ -159,6 +165,7 @@ func NewDataFeedPollTask(dataFeedConfig *config.DataFeedConfig, connFactory *sec
 		reporting: reporting.NewReportingServiceClient(complianceConn),
 		cfgMgmt:   cfgmgmt.NewCfgMgmtClient(cfgMgmtConn),
 		db:        db,
+		manager:   manager,
 	}, nil
 }
 
@@ -170,12 +177,23 @@ func (d *DataFeedPollTask) Run(ctx context.Context, task cereal.Task) (interface
 	}
 
 	now := time.Now()
-	feedStartTime, feedEndTime := getFeedTimes(params.FeedInterval, now)
+	params = getFeedTimes(params, now)
+	feedStartTime := params.NextFeedStart
+	feedEndTime := params.NextFeedEnd
 	destinations, err := d.getDestinations()
-
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get destinations from db")
 	}
+	params.NextFeedStart = feedEndTime
+	params.NextFeedEnd = feedEndTime.Add(params.FeedInterval)
+	log.Debugf("Updated Feed interval start, end: %s, %s", params.NextFeedStart.Format("15:04:05"), params.NextFeedEnd.Format("15:04:05"))
+	err = d.manager.UpdateWorkflowScheduleByName(context.Background(), dataFeedScheduleName, dataFeedWorkflowName,
+		cereal.UpdateParameters(params),
+		cereal.UpdateEnabled(true))
+	if err != nil {
+		return nil, err
+	}
+
 	if len(destinations) == 0 {
 		return nil, nil
 	}
@@ -226,15 +244,15 @@ func handleSendErr(notification datafeedNotification, startTime time.Time, endTi
 	// TODO report this failure to the UI with the time window and notification details
 }
 
-func getFeedTimes(feedInterval time.Duration, now time.Time) (time.Time, time.Time) {
-	var feedEndTime time.Time
-	var feedStartTime time.Time
+func getFeedTimes(params DataFeedPollTaskParams, now time.Time) DataFeedPollTaskParams {
 
-	feedEndTime = getFeedEndTime(feedInterval, now)
-	feedStartTime = feedEndTime.Add(-feedInterval)
+	if params.NextFeedStart.IsZero() {
+		params.NextFeedEnd = getFeedEndTime(params.FeedInterval, now)
+		params.NextFeedStart = params.NextFeedEnd.Add(-params.FeedInterval)
+	}
 
-	log.Debugf("Feed interval start, end: %s, %s", feedStartTime.Format("15:04:05"), feedEndTime.Format("15:04:05"))
-	return feedStartTime, feedEndTime
+	log.Debugf("Current Feed interval start, end: %s, %s", params.NextFeedStart.Format("15:04:05"), params.NextFeedEnd.Format("15:04:05"))
+	return params
 }
 
 func getFeedEndTime(feedInterval time.Duration, now time.Time) time.Time {
